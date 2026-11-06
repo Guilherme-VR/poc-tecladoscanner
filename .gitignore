@@ -1,0 +1,20 @@
+# Saída dos builds
+dist/
+agente/pacote.zip
+app/build/
+
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins-dependencies
+app/.pub-cache/
+app/.pub/
+app/linux/flutter/ephemeral/
+app/windows/flutter/ephemeral/
+
+# IDE / sistema
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.swp
+*.log
