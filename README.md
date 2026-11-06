@@ -5,8 +5,11 @@ Mostra o que é digitado e de onde veio: **TECLADO** (o aparelho identificado) o
 Só escuta as teclas, nunca bloqueia nada.
 
 - `agente/` — Go. Escuta os teclados (Windows: Raw Input, Linux: /dev/input) e
-  escreve um JSON por tecla no stdout.
-- `app/` — Flutter. Abre o agente, mostra o texto e classifica TECLADO/SCANNER.
+  escreve um JSON por tecla só com a origem: `{"tipo":"tecla","id":"VID:PID"}`.
+  Não converte tecla em caractere.
+- `app/` — Flutter. O caractere vem do próprio Flutter (o sistema já converte);
+  cada tecla do app é casada, na ordem, com a tecla informada pelo agente, que
+  diz se veio do TECLADO ou do SCANNER.
 
 ## Gerar o executável único
 
@@ -41,13 +44,10 @@ Para ver só o agente no terminal: `go run . --agente`.
 
 1. Abra o executável.
 2. Clique em **Identificar teclado** e aperte uma tecla no teclado de verdade.
-3. Digite no teclado e passe o leitor: cada texto aparece como TECLADO ou SCANNER
-   (a linha vai para "Leituras" quando chega o Enter).
+3. Com a janela do app em foco, digite no teclado ou passe o leitor: cada letra
+   aparece como TECLADO ou SCANNER (a linha vai para "Leituras" no Enter).
 
 ## Linux
 
 - Permissão, uma vez só por usuário: `sudo usermod -aG input $USER`. Não precisa
   sair da sessão: o agente ativa o grupo sozinho. Depois disso roda sem sudo.
-- A conversão de teclas em caracteres usa uma tabela ABNT2 fixa. Em teclado ou
-  layout US, alguns símbolos (`? ; : / [ ]`) saem diferentes. A identificação
-  TECLADO/SCANNER não é afetada. No Windows o layout ativo é usado.

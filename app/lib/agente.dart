@@ -4,18 +4,16 @@ import 'dart:io';
 
 /// Evento enviado pelo agente Go (uma linha JSON por evento).
 class EventoAgente {
-  final String tipo; // pronto | tecla | enter | apagar | erro
-  final String disp; // unidade física (separa 2 aparelhos iguais)
-  final String id; // VID:PID
+  final String tipo; // pronto | tecla | erro
+  final String id; // VID:PID do aparelho de onde veio a tecla
   final String nome;
-  final String texto;
+  final String texto; // mensagem de erro
 
   EventoAgente.fromJson(Map<String, dynamic> j)
-      : tipo = j['tipo'] ?? '',
-        disp = j['disp'] ?? '',
-        id = j['id'] ?? '',
-        nome = j['nome'] ?? '',
-        texto = j['texto'] ?? '';
+    : tipo = j['tipo'] ?? '',
+      id = j['id'] ?? '',
+      nome = j['nome'] ?? '',
+      texto = j['texto'] ?? '';
 }
 
 /// Abre o executável Go com "--agente" e lê os eventos do stdout.
@@ -45,10 +43,9 @@ class Agente {
     final p = await Process.start(exe, ['--agente']);
     _processo = p;
 
-    p.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((linha) {
+    p.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((
+      linha,
+    ) {
       try {
         _eventos.add(EventoAgente.fromJson(jsonDecode(linha)));
       } catch (_) {}

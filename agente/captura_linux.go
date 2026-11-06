@@ -25,25 +25,14 @@ import (
 )
 
 const (
-	evKey        = 1
-	tamEvento    = 24 // struct input_event em 64 bits
-	keyBackspace = 14
-	keyEnter     = 28
-	keyKPEnter   = 96
-	keyCapsLock  = 58
-	keyLShift    = 42
-	keyRShift    = 54
-	keyLCtrl     = 29
-	keyRCtrl     = 97
-	keyLAlt      = 56
-	keyRAlt      = 100 // AltGr
+	evKey     = 1
+	tamEvento = 24 // struct input_event em 64 bits
+	keyEnter  = 28
 )
 
 var (
 	abertosMu sync.Mutex
 	abertos   = map[string]bool{}
-	capsMu    sync.Mutex
-	capsLock  bool
 )
 
 // prepararPermissao: se o usuário já está no grupo "input" mas a sessão ainda
@@ -111,15 +100,11 @@ func capturar() error {
 				}
 				continue
 			}
-			d := Dispositivo{
-				Disp: nome,
-				ID:   strings.ToUpper(lerSys(sys, "device/id/vendor") + ":" + lerSys(sys, "device/id/product")),
-				Nome: lerSys(sys, "device/name"),
-			}
+			id := strings.ToUpper(lerSys(sys, "device/id/vendor") + ":" + lerSys(sys, "device/id/product"))
 			abertosMu.Lock()
 			abertos[nome] = true
 			abertosMu.Unlock()
-			go ler(f, d)
+			go ler(f, nome, id, lerSys(sys, "device/name"))
 		}
 		time.Sleep(2 * time.Second) // detecta aparelhos plugados depois
 	}
@@ -143,15 +128,15 @@ func ehTeclado(sys string) bool {
 	return baixo&(1<<2) != 0 && baixo&(1<<keyEnter) != 0
 }
 
-func ler(f *os.File, d Dispositivo) {
+// ler emite um evento a cada tecla apertada neste aparelho.
+func ler(f *os.File, arquivo, id, nome string) {
 	defer func() {
 		f.Close()
 		abertosMu.Lock()
-		delete(abertos, d.Disp)
+		delete(abertos, arquivo)
 		abertosMu.Unlock()
 	}()
 
-	var shiftL, shiftR, ctrl, alt, altGr bool
 	buf := make([]byte, tamEvento*64)
 	for {
 		n, err := f.Read(buf)
@@ -161,59 +146,9 @@ func ler(f *os.File, d Dispositivo) {
 		for i := 0; i+tamEvento <= n; i += tamEvento {
 			ev := buf[i : i+tamEvento]
 			tipo := binary.LittleEndian.Uint16(ev[16:])
-			cod := binary.LittleEndian.Uint16(ev[18:])
-			val := int32(binary.LittleEndian.Uint32(ev[20:])) // 0 solta, 1 aperta, 2 repete
-			if tipo != evKey {
-				continue
-			}
-			apertada := val != 0
-			switch cod {
-			case keyLShift:
-				shiftL = apertada
-				continue
-			case keyRShift:
-				shiftR = apertada
-				continue
-			case keyLCtrl, keyRCtrl:
-				ctrl = apertada
-				continue
-			case keyLAlt:
-				alt = apertada
-				continue
-			case keyRAlt:
-				altGr = apertada
-				continue
-			case keyCapsLock:
-				if val == 1 {
-					capsMu.Lock()
-					capsLock = !capsLock
-					capsMu.Unlock()
-				}
-				continue
-			}
-			if !apertada {
-				continue
-			}
-			switch cod {
-			case keyEnter, keyKPEnter:
-				emitirEnter(d)
-				continue
-			case keyBackspace:
-				emitirApagar(d)
-				continue
-			}
-			if ctrl || alt {
-				continue
-			}
-			capsMu.Lock()
-			caps := capsLock
-			capsMu.Unlock()
-			if r, morta, ok := teclaABNT2(cod, shiftL || shiftR, caps, altGr); ok {
-				if morta {
-					emitirMorta(d, r)
-				} else {
-					emitirChar(d, r)
-				}
+			val := binary.LittleEndian.Uint32(ev[20:]) // 0 solta, 1 aperta, 2 repete
+			if tipo == evKey && val == 1 {
+				emitir(Evento{Tipo: "tecla", ID: id, Nome: nome})
 			}
 		}
 	}

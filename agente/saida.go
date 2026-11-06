@@ -8,24 +8,18 @@ import (
 
 // Evento é escrito como uma linha JSON no stdout.
 //
-//	tipo:  "pronto" | "tecla" | "enter" | "apagar" | "erro"
-//	disp:  identifica a unidade física nesta sessão (separa o texto de 2 aparelhos iguais)
-//	id:    VID:PID do aparelho (ex: "046D:C31C") - é o que define TECLADO x SCANNER
+//	tipo:  "pronto" | "tecla" | "erro"
+//	id:    VID:PID do aparelho de onde veio a tecla (ex: "046D:C31C")
 //	nome:  nome do aparelho, quando o sistema informa
-//	texto: o caractere digitado (tipo "tecla") ou a mensagem (tipo "erro")
+//	texto: mensagem de erro
+//
+// Não há conversão de tecla em caractere: o texto chega ao app pelo caminho
+// normal do sistema. O agente só diz de qual aparelho veio cada tecla.
 type Evento struct {
 	Tipo  string `json:"tipo"`
-	Disp  string `json:"disp,omitempty"`
 	ID    string `json:"id,omitempty"`
 	Nome  string `json:"nome,omitempty"`
 	Texto string `json:"texto,omitempty"`
-}
-
-// Dispositivo é a origem de uma tecla.
-type Dispositivo struct {
-	Disp string
-	ID   string
-	Nome string
 }
 
 var (

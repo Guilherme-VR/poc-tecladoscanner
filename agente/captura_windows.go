@@ -5,15 +5,14 @@ package main
 // Captura no Windows via Raw Input: o Windows entrega uma CÓPIA de cada tecla
 // junto com o aparelho de origem (hDevice). Nada é bloqueado ou atrasado:
 // a tecla original continua indo normalmente para o programa em foco.
-// Não precisa de administrador.
+// Não precisa de administrador. Não converte a tecla em caractere: só
+// informa de qual aparelho ela veio.
 
 import (
 	"fmt"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -24,22 +23,17 @@ var (
 	hid    = windows.NewLazySystemDLL("hid.dll")
 	kernel = windows.NewLazySystemDLL("kernel32.dll")
 
-	pRegisterClassExW         = user32.NewProc("RegisterClassExW")
-	pCreateWindowExW          = user32.NewProc("CreateWindowExW")
-	pDefWindowProcW           = user32.NewProc("DefWindowProcW")
-	pGetMessageW              = user32.NewProc("GetMessageW")
-	pDispatchMessageW         = user32.NewProc("DispatchMessageW")
-	pRegisterRawInputDevices  = user32.NewProc("RegisterRawInputDevices")
-	pGetRawInputData          = user32.NewProc("GetRawInputData")
-	pGetRawInputDeviceInfoW   = user32.NewProc("GetRawInputDeviceInfoW")
-	pToUnicodeEx              = user32.NewProc("ToUnicodeEx")
-	pGetKeyboardLayout        = user32.NewProc("GetKeyboardLayout")
-	pGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
-	pGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
-	pGetKeyState              = user32.NewProc("GetKeyState")
-	pMessageBoxW              = user32.NewProc("MessageBoxW")
-	pHidDGetProductString     = hid.NewProc("HidD_GetProductString")
-	pGetModuleHandleW         = kernel.NewProc("GetModuleHandleW")
+	pRegisterClassExW        = user32.NewProc("RegisterClassExW")
+	pCreateWindowExW         = user32.NewProc("CreateWindowExW")
+	pDefWindowProcW          = user32.NewProc("DefWindowProcW")
+	pGetMessageW             = user32.NewProc("GetMessageW")
+	pDispatchMessageW        = user32.NewProc("DispatchMessageW")
+	pRegisterRawInputDevices = user32.NewProc("RegisterRawInputDevices")
+	pGetRawInputData         = user32.NewProc("GetRawInputData")
+	pGetRawInputDeviceInfoW  = user32.NewProc("GetRawInputDeviceInfoW")
+	pMessageBoxW             = user32.NewProc("MessageBoxW")
+	pHidDGetProductString    = hid.NewProc("HidD_GetProductString")
+	pGetModuleHandleW        = kernel.NewProc("GetModuleHandleW")
 )
 
 const (
@@ -49,21 +43,7 @@ const (
 	ridevInputSink  = 0x00000100
 	ridiDeviceName  = 0x20000007
 	riKeyBreak      = 0x01
-	riKeyE0         = 0x02
 	hwndMessage     = ^uintptr(2) // (HWND)-3
-
-	vkBack    = 0x08
-	vkReturn  = 0x0D
-	vkShift   = 0x10
-	vkControl = 0x11
-	vkMenu    = 0x12
-	vkCapital = 0x14
-	vkLShift  = 0xA0
-	vkRShift  = 0xA1
-	vkLCtrl   = 0xA2
-	vkRCtrl   = 0xA3
-	vkLMenu   = 0xA4
-	vkRMenu   = 0xA5
 )
 
 type wndClassEx struct {
@@ -120,19 +100,18 @@ type rawInputKeyboard struct {
 	Keyboard rawKeyboard
 }
 
-// Estado dos modificadores de cada aparelho (o Shift de um teclado não
-// afeta o que o scanner digita e vice-versa).
-type modificadores struct {
-	shiftL, shiftR, ctrlL, ctrlR, altL, altR bool
-}
-
 var (
 	aparelhos = map[uintptr]Dispositivo{}
-	mods      = map[uintptr]*modificadores{}
-	capsLock  bool
+	apertadas = map[[2]uintptr]bool{} // aparelho+tecla seguradas: ignora a repetição
 	reVID     = regexp.MustCompile(`(?i)VID[_&](?:000[12])?([0-9a-f]{4})`)
 	rePID     = regexp.MustCompile(`(?i)PID[_&]([0-9a-f]{4})`)
 )
+
+// Dispositivo é a origem de uma tecla (guardado em memória por hDevice).
+type Dispositivo struct {
+	ID   string
+	Nome string
+}
 
 // No Windows não precisa de permissão especial.
 func prepararPermissao() {}
@@ -171,9 +150,6 @@ func capturar() error {
 		return fmt.Errorf("RegisterRawInputDevices: %v", err)
 	}
 
-	ks, _, _ := pGetKeyState.Call(vkCapital)
-	capsLock = ks&1 != 0
-
 	var m msg
 	for {
 		r, _, err := pGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
@@ -190,6 +166,7 @@ func capturar() error {
 	}
 }
 
+// tratarRawInput emite um evento a cada tecla apertada, com o aparelho de origem.
 func tratarRawInput(lParam uintptr) {
 	var ri rawInputKeyboard
 	tam := uint32(unsafe.Sizeof(ri))
@@ -198,112 +175,21 @@ func tratarRawInput(lParam uintptr) {
 	if int32(r) <= 0 || ri.Header.Type != rimTypeKeyboard {
 		return
 	}
-
 	kb := ri.Keyboard
 	if kb.VKey == 0xFF { // tecla "falsa" gerada pelo Windows
 		return
 	}
-	hDev := ri.Header.Device
-	d := dispositivo(hDev)
-	md := mods[hDev]
-	if md == nil {
-		md = &modificadores{}
-		mods[hDev] = md
-	}
-
-	solta := kb.Flags&riKeyBreak != 0
-	e0 := kb.Flags&riKeyE0 != 0
-
-	switch kb.VKey {
-	case vkShift:
-		if kb.MakeCode == 0x36 {
-			md.shiftR = !solta
-		} else {
-			md.shiftL = !solta
-		}
-		return
-	case vkControl:
-		if e0 {
-			md.ctrlR = !solta
-		} else {
-			md.ctrlL = !solta
-		}
-		return
-	case vkMenu:
-		if e0 {
-			md.altR = !solta
-		} else {
-			md.altL = !solta
-		}
-		return
-	case vkCapital:
-		if !solta {
-			capsLock = !capsLock // Caps Lock é global no Windows
-		}
+	chave := [2]uintptr{ri.Header.Device, uintptr(kb.VKey)}
+	if kb.Flags&riKeyBreak != 0 {
+		delete(apertadas, chave)
 		return
 	}
-	if solta {
-		return
+	if apertadas[chave] {
+		return // repetição de tecla segurada
 	}
-
-	switch kb.VKey {
-	case vkReturn:
-		emitirEnter(d)
-		return
-	case vkBack:
-		emitirApagar(d)
-		return
-	}
-
-	ctrl := md.ctrlL || md.ctrlR
-	alt := md.altL || md.altR
-	if ctrl != alt { // Ctrl+X, Alt+Tab etc. não são texto (Ctrl+Alt = AltGr é)
-		return
-	}
-
-	var estado [256]byte
-	marcar := func(on bool, vks ...int) {
-		if on {
-			for _, v := range vks {
-				estado[v] = 0x80
-			}
-		}
-	}
-	marcar(md.shiftL, vkShift, vkLShift)
-	marcar(md.shiftR, vkShift, vkRShift)
-	marcar(md.ctrlL, vkControl, vkLCtrl)
-	marcar(md.ctrlR, vkControl, vkRCtrl)
-	marcar(md.altL, vkMenu, vkLMenu)
-	marcar(md.altR, vkMenu, vkRMenu)
-	if capsLock {
-		estado[vkCapital] = 0x01
-	}
-
-	// Usa o layout do programa em foco (ABNT2, US etc.).
-	fg, _, _ := pGetForegroundWindow.Call()
-	tid, _, _ := pGetWindowThreadProcessId.Call(fg, 0)
-	hkl, _, _ := pGetKeyboardLayout.Call(tid)
-
-	var buf [8]uint16
-	scan := uintptr(kb.MakeCode)
-	if e0 {
-		scan |= 0xE000
-	}
-	// Flag 0x4: não altera o estado de teclado do Windows (não interfere
-	// em acentos digitados no programa em foco).
-	n, _, _ := pToUnicodeEx.Call(uintptr(kb.VKey), scan, uintptr(unsafe.Pointer(&estado[0])),
-		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0x4, hkl)
-
-	switch {
-	case int32(n) < 0:
-		emitirMorta(d, rune(buf[0]))
-	case n > 0:
-		for _, r := range syscall.UTF16ToString(buf[:n]) {
-			if r >= 0x20 {
-				emitirChar(d, r)
-			}
-		}
-	}
+	apertadas[chave] = true
+	d := dispositivo(ri.Header.Device)
+	emitir(Evento{Tipo: "tecla", ID: d.ID, Nome: d.Nome})
 }
 
 // dispositivo descobre (uma vez só, depois fica em memória) o VID:PID do aparelho.
@@ -311,7 +197,7 @@ func dispositivo(h uintptr) Dispositivo {
 	if d, ok := aparelhos[h]; ok {
 		return d
 	}
-	d := Dispositivo{Disp: "h" + strconv.FormatUint(uint64(h), 16)}
+	var d Dispositivo
 	if h == 0 {
 		// Tecla injetada por software (teclado virtual, área de trabalho remota...).
 		d.ID = "SEM-APARELHO"
