@@ -8,13 +8,14 @@ import (
 
 // Evento é escrito como uma linha JSON no stdout.
 //
-//	tipo:  "pronto" | "tecla" | "erro"
-//	id:    VID:PID do aparelho de onde veio a tecla (ex: "046D:C31C")
+//	tipo:  "pronto" | "tecla" | "serial" | "aviso" | "erro"
+//	id:    aparelho de origem (tecla: ID único do teclado/scanner USB;
+//	       serial: a porta, ex: "COM3" ou "/dev/ttyACM0")
 //	nome:  nome do aparelho, quando o sistema informa
-//	texto: mensagem de erro
+//	texto: leitura serial completa, ou a mensagem de aviso/erro
 //
-// Não há conversão de tecla em caractere: o texto chega ao app pelo caminho
-// normal do sistema. O agente só diz de qual aparelho veio cada tecla.
+// Teclas USB não são convertidas em caractere: o texto chega ao app pelo
+// caminho normal do sistema; o agente só diz de qual aparelho veio cada tecla.
 type Evento struct {
 	Tipo  string `json:"tipo"`
 	ID    string `json:"id,omitempty"`

@@ -4,10 +4,10 @@ import 'dart:io';
 
 /// Evento enviado pelo agente Go (uma linha JSON por evento).
 class EventoAgente {
-  final String tipo; // pronto | tecla | erro
-  final String id; // VID:PID do aparelho de onde veio a tecla
+  final String tipo; // pronto | tecla | serial | aviso | erro
+  final String id; // aparelho de origem (USB) ou porta serial (COM3...)
   final String nome;
-  final String texto; // mensagem de erro
+  final String texto; // leitura serial, ou mensagem de aviso/erro
 
   EventoAgente.fromJson(Map<String, dynamic> j)
     : tipo = j['tipo'] ?? '',
@@ -54,6 +54,13 @@ class Agente {
       _eventos.add(EventoAgente.fromJson({'tipo': 'erro', 'texto': t.trim()}));
     });
     p.exitCode.then(_saiu.complete);
+  }
+
+  /// Manda um comando ao agente (uma linha JSON no stdin).
+  void enviar(Map<String, dynamic> comando) {
+    try {
+      _processo?.stdin.writeln(jsonEncode(comando));
+    } catch (_) {}
   }
 
   void parar() => _processo?.kill();

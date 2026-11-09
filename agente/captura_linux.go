@@ -3,7 +3,7 @@
 package main
 
 // Captura no Linux lendo /dev/input/eventN. Cada arquivo é um aparelho, então
-// a origem é conhecida pelo arquivo lido; o VID:PID é lido uma vez, ao abrir.
+// a origem é conhecida pelo arquivo lido; o ID é a porta física do aparelho.
 // Leitura sem "grab": nada é bloqueado, as teclas seguem normalmente.
 // Precisa que o usuário esteja no grupo "input".
 
@@ -100,7 +100,12 @@ func capturar() error {
 				}
 				continue
 			}
-			id := strings.ToUpper(lerSys(sys, "device/id/vendor") + ":" + lerSys(sys, "device/id/product"))
+			// ID único do aparelho: a porta física (phys). Dois scanners iguais
+			// em portas USB diferentes ficam com IDs diferentes.
+			id := lerSys(sys, "device/phys")
+			if id == "" {
+				id = nome
+			}
 			abertosMu.Lock()
 			abertos[nome] = true
 			abertosMu.Unlock()

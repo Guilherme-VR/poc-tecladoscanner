@@ -1,5 +1,6 @@
-// Agente que escuta todos os teclados da máquina (sem bloquear nada) e
-// informa, para cada tecla, de qual aparelho (VID:PID) ela veio.
+// Agente que escuta todos os teclados da máquina (sem bloquear nada) e as
+// portas seriais. Para cada tecla informa de qual aparelho ela veio; para cada
+// leitura serial informa a porta e o texto.
 //
 // Modos:
 //   - "--agente": escuta as teclas e escreve um JSON por linha no stdout.
@@ -9,8 +10,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -27,17 +28,39 @@ func main() {
 
 	prepararPermissao()
 
-	// Quando o app Flutter fecha, o stdin do agente fecha junto: encerra.
+	// O app manda comandos pelo stdin, um JSON por linha. Quando o app fecha,
+	// o stdin fecha junto: encerra.
 	if modoAgente {
-		go func() {
-			io.Copy(io.Discard, bufio.NewReader(os.Stdin))
-			os.Exit(0)
-		}()
+		go lerComandos()
+	} else {
+		definirPortas(true, nil) // rodando sozinho no terminal: escuta todas
 	}
 
 	emitir(Evento{Tipo: "pronto"})
+	go capturarSeriais()
 	if err := capturar(); err != nil {
 		emitir(Evento{Tipo: "erro", Texto: err.Error()})
 		os.Exit(1)
 	}
+}
+
+// Comando do app para o agente.
+//
+//	{"cmd":"portas","todas":true}               cadastro: abre todas as seriais
+//	{"cmd":"portas","lista":["COM3","COM4"]}    só as dos scanners cadastrados
+type Comando struct {
+	Cmd   string   `json:"cmd"`
+	Todas bool     `json:"todas"`
+	Lista []string `json:"lista"`
+}
+
+func lerComandos() {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var c Comando
+		if json.Unmarshal(sc.Bytes(), &c) == nil && c.Cmd == "portas" {
+			definirPortas(c.Todas, c.Lista)
+		}
+	}
+	os.Exit(0)
 }

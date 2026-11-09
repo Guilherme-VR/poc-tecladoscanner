@@ -10,7 +10,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -103,8 +102,6 @@ type rawInputKeyboard struct {
 var (
 	aparelhos = map[uintptr]Dispositivo{}
 	apertadas = map[[2]uintptr]bool{} // aparelho+tecla seguradas: ignora a repetição
-	reVID     = regexp.MustCompile(`(?i)VID[_&](?:000[12])?([0-9a-f]{4})`)
-	rePID     = regexp.MustCompile(`(?i)PID[_&]([0-9a-f]{4})`)
 )
 
 // Dispositivo é a origem de uma tecla (guardado em memória por hDevice).
@@ -192,7 +189,9 @@ func tratarRawInput(lParam uintptr) {
 	emitir(Evento{Tipo: "tecla", ID: d.ID, Nome: d.Nome})
 }
 
-// dispositivo descobre (uma vez só, depois fica em memória) o VID:PID do aparelho.
+// dispositivo descobre (uma vez só, depois fica em memória) o ID do aparelho:
+// o caminho do dispositivo, único por aparelho (dois scanners iguais em portas
+// USB diferentes ficam com IDs diferentes).
 func dispositivo(h uintptr) Dispositivo {
 	if d, ok := aparelhos[h]; ok {
 		return d
@@ -207,18 +206,9 @@ func dispositivo(h uintptr) Dispositivo {
 	}
 
 	caminho := nomeAparelho(h)
-	vid := reVID.FindStringSubmatch(caminho)
-	pid := rePID.FindStringSubmatch(caminho)
-	if vid != nil && pid != nil {
-		d.ID = strings.ToUpper(vid[1] + ":" + pid[1])
-	} else {
-		// Sem VID/PID (ex: teclado interno de notebook "ACPI#PNP0303#...").
-		partes := strings.Split(caminho, "#")
-		if len(partes) > 1 {
-			d.ID = strings.ToUpper(partes[1])
-		} else {
-			d.ID = "DESCONHECIDO"
-		}
+	d.ID = strings.ToUpper(caminho)
+	if d.ID == "" {
+		d.ID = "DESCONHECIDO"
 	}
 	d.Nome = nomeProduto(caminho)
 	aparelhos[h] = d

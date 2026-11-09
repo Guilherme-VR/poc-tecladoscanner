@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,16 +22,36 @@ class App extends StatelessWidget {
   }
 }
 
+const maxScanners = 2;
 const corTeclado = Color(0xFF1E66D0);
-const corScanner = Color(0xFFE07B00);
+const corSerial = Colors.blueGrey;
+const coresScanner = [Color(0xFFE07B00), Color(0xFF8E24AA)];
 
-class Leitura {
-  final DateTime hora;
-  final bool teclado;
-  final String texto;
+/// Scanner cadastrado. O ID só serve para reconhecer o aparelho: porta
+/// serial (COM3, /dev/ttyACM0) ou o ID único do aparelho USB.
+class Scanner {
   final String id;
   final String nome;
-  Leitura(this.hora, this.teclado, this.texto, this.id, this.nome);
+  final bool serial;
+  Scanner(this.id, this.nome, this.serial);
+
+  String get descricao =>
+      serial ? 'Serial $id' : (nome.isEmpty ? 'Scanner USB' : 'USB · $nome');
+
+  Map<String, dynamic> toJson() => {'id': id, 'nome': nome, 'serial': serial};
+  Scanner.fromJson(Map<String, dynamic> j)
+    : id = j['id'] ?? '',
+      nome = j['nome'] ?? '',
+      serial = j['serial'] ?? false;
+}
+
+class Leitura {
+  final DateTime hora = DateTime.now();
+  final String id;
+  final String nome;
+  final bool serial;
+  final String texto;
+  Leitura(this.id, this.nome, this.serial, this.texto);
 }
 
 /// Tecla informada pelo agente: só de qual aparelho veio.
@@ -47,7 +69,7 @@ class TeclaApp {
   TeclaApp(this.evento);
 }
 
-/// Texto sendo digitado agora por um aparelho.
+/// Texto sendo digitado agora por um aparelho USB.
 class Digitando {
   final String id;
   final String nome;
@@ -66,10 +88,10 @@ class _TelaState extends State<Tela> {
   final _agente = Agente();
   SharedPreferences? _prefs;
 
-  String? _tecladoId;
-  String _tecladoNome = '';
+  final List<Scanner> _scanners = [];
   bool _identificando = false;
   String _status = 'Iniciando...';
+  String _aviso = '';
   bool _conectado = false;
 
   final List<Origem> _origens = [];
@@ -93,9 +115,13 @@ class _TelaState extends State<Tela> {
 
   Future<void> _iniciar() async {
     _prefs = await SharedPreferences.getInstance();
+    final salvos = _prefs!.getStringList('scanners') ?? [];
     setState(() {
-      _tecladoId = _prefs!.getString('tecladoId');
-      _tecladoNome = _prefs!.getString('tecladoNome') ?? '';
+      for (final s in salvos) {
+        try {
+          _scanners.add(Scanner.fromJson(jsonDecode(s)));
+        } catch (_) {}
+      }
     });
 
     _agente.eventos.listen(_receber);
@@ -109,26 +135,59 @@ class _TelaState extends State<Tela> {
     });
     try {
       await _agente.iniciar();
+      _atualizarPortas();
     } catch (e) {
       setState(() => _status = e.toString());
     }
   }
 
-  bool _ehTeclado(String id) => _tecladoId != null && id == _tecladoId;
+  void _salvarScanners() {
+    _prefs?.setStringList(
+      'scanners',
+      _scanners.map((s) => jsonEncode(s.toJson())).toList(),
+    );
+  }
+
+  /// Diz ao agente quais portas seriais abrir: todas durante o cadastro;
+  /// fora dele, só as dos scanners seriais cadastrados.
+  void _atualizarPortas() {
+    _agente.enviar(
+      _identificando
+          ? {'cmd': 'portas', 'todas': true}
+          : {
+              'cmd': 'portas',
+              'lista': [
+                for (final s in _scanners)
+                  if (s.serial) s.id,
+              ],
+            },
+    );
+  }
+
+  void _cadastrar(bool ligar) {
+    setState(() {
+      _identificando = ligar;
+      if (ligar) _aviso = '';
+    });
+    _atualizarPortas();
+  }
+
+  /// Posição do scanner cadastrado (0 ou 1), ou -1 se não for scanner.
+  int _scanner(String id) => _scanners.indexWhere((s) => s.id == id);
 
   void _receber(EventoAgente e) {
     setState(() {
       switch (e.tipo) {
         case 'pronto':
           _conectado = true;
-          _status = 'Escutando os teclados';
+          _status = 'Escutando teclados, scanners USB e portas seriais';
         case 'erro':
           _status = e.texto;
+        case 'aviso':
+          _aviso = e.texto;
+        case 'serial':
+          _novaLeitura(Leitura(e.id, e.nome, true, e.texto));
         case 'tecla':
-          if (_identificando) {
-            _salvarTeclado(e.id, e.nome);
-            return;
-          }
           _origens.add(Origem(e.id, e.nome));
           _parear();
       }
@@ -137,7 +196,7 @@ class _TelaState extends State<Tela> {
 
   /// Toda tecla apertada com o app em foco (não consome a tecla).
   bool _teclaApp(KeyEvent e) {
-    if (e is KeyDownEvent && !e.synthesized && !_identificando) {
+    if (e is KeyDownEvent && !e.synthesized) {
       setState(() {
         _teclas.add(TeclaApp(e));
         _parear();
@@ -165,10 +224,7 @@ class _TelaState extends State<Tela> {
     if (tecla == LogicalKeyboardKey.enter ||
         tecla == LogicalKeyboardKey.numpadEnter) {
       if (d.texto.isNotEmpty) {
-        _leituras.insert(
-          0,
-          Leitura(DateTime.now(), _ehTeclado(d.id), d.texto, d.id, d.nome),
-        );
+        _novaLeitura(Leitura(d.id, d.nome, false, d.texto));
       }
       _digitando.remove(o.id);
     } else if (tecla == LogicalKeyboardKey.backspace) {
@@ -183,12 +239,27 @@ class _TelaState extends State<Tela> {
     }
   }
 
-  void _salvarTeclado(String id, String nome) {
-    _identificando = false;
-    _tecladoId = id;
-    _tecladoNome = nome;
-    _prefs?.setString('tecladoId', id);
-    _prefs?.setString('tecladoNome', nome);
+  /// Leitura completa (Enter no USB, fim de linha na serial). Se está
+  /// aguardando o cadastro, a origem desta leitura vira um scanner.
+  void _novaLeitura(Leitura l) {
+    if (_identificando &&
+        _scanner(l.id) < 0 &&
+        _scanners.length < maxScanners) {
+      _scanners.add(Scanner(l.id, l.nome, l.serial));
+      _salvarScanners();
+      _identificando = false;
+      _atualizarPortas();
+    }
+    _leituras.insert(0, l);
+    if (_leituras.length > 200) _leituras.removeLast();
+  }
+
+  void _remover(int i) {
+    setState(() {
+      _scanners.removeAt(i);
+      _salvarScanners();
+    });
+    _atualizarPortas();
   }
 
   @override
@@ -200,7 +271,7 @@ class _TelaState extends State<Tela> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _cartaoTeclado(),
+            _cartaoScanners(),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -215,6 +286,11 @@ class _TelaState extends State<Tela> {
                 ),
               ],
             ),
+            if (_aviso.isNotEmpty)
+              Text(
+                _aviso,
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
             const Divider(height: 24),
             const Text(
               'Digitando agora (com o app em foco):',
@@ -229,7 +305,7 @@ class _TelaState extends State<Tela> {
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Row(
                     children: [
-                      _etiqueta(_ehTeclado(d.id)),
+                      _etiqueta(d.id, false),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -271,48 +347,73 @@ class _TelaState extends State<Tela> {
     );
   }
 
-  Widget _cartaoTeclado() {
-    final String titulo;
-    final String detalhe;
-    if (_identificando) {
-      titulo = 'Aperte qualquer tecla no teclado...';
-      detalhe = 'A próxima tecla define qual aparelho é o teclado';
-    } else if (_tecladoId == null) {
-      titulo = 'Teclado não identificado';
-      detalhe =
-          'Tudo está sendo tratado como SCANNER. Clique em "Identificar teclado".';
-    } else {
-      titulo = _tecladoNome.isEmpty ? 'Teclado' : _tecladoNome;
-      detalhe = 'ID: $_tecladoId';
-    }
+  Widget _cartaoScanners() {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Icon(Icons.keyboard, color: corTeclado),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    titulo,
+            Row(
+              children: [
+                const Icon(Icons.qr_code_scanner),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _identificando
+                        ? 'Faça uma leitura no scanner...'
+                        : 'Scanners (${_scanners.length}/$maxScanners)',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  Text(detalhe, style: const TextStyle(fontSize: 12)),
-                ],
-              ),
-            ),
-            _identificando
-                ? OutlinedButton(
-                    onPressed: () => setState(() => _identificando = false),
+                ),
+                if (_identificando)
+                  OutlinedButton(
+                    onPressed: () => _cadastrar(false),
                     child: const Text('Cancelar'),
                   )
-                : FilledButton(
-                    onPressed: () => setState(() => _identificando = true),
-                    child: const Text('Identificar teclado'),
+                else
+                  FilledButton(
+                    onPressed: _scanners.length >= maxScanners
+                        ? null
+                        : () => _cadastrar(true),
+                    child: const Text('Adicionar scanner'),
                   ),
+              ],
+            ),
+            if (_identificando)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'A próxima leitura define o scanner (USB ou serial). '
+                  'Para USB, deixe o app em foco. As portas seriais ficam '
+                  'abertas só durante o cadastro.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            if (_scanners.isEmpty && !_identificando)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Nenhum scanner cadastrado: tudo aparece como TECLADO.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            for (var i = 0; i < _scanners.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(
+                  children: [
+                    _etiqueta(_scanners[i].id, _scanners[i].serial),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_scanners[i].descricao)),
+                    IconButton(
+                      tooltip: 'Remover',
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: () => _remover(i),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),
@@ -323,6 +424,7 @@ class _TelaState extends State<Tela> {
     String dois(int n) => n.toString().padLeft(2, '0');
     final hora =
         '${dois(l.hora.hour)}:${dois(l.hora.minute)}:${dois(l.hora.second)}';
+    final detalhe = l.serial ? l.id : l.nome;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -333,7 +435,7 @@ class _TelaState extends State<Tela> {
             style: const TextStyle(fontFamily: 'monospace', color: Colors.grey),
           ),
           const SizedBox(width: 8),
-          _etiqueta(l.teclado),
+          _etiqueta(l.id, l.serial),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -343,9 +445,9 @@ class _TelaState extends State<Tela> {
                   l.texto,
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 16),
                 ),
-                if (!l.teclado)
+                if (detalhe.isNotEmpty)
                   Text(
-                    '${l.nome} ${l.id}'.trim(),
+                    detalhe,
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                   ),
               ],
@@ -356,10 +458,24 @@ class _TelaState extends State<Tela> {
     );
   }
 
-  Widget _etiqueta(bool teclado) {
-    final cor = teclado ? corTeclado : corScanner;
+  /// SCANNER 1 / SCANNER 2 para os cadastrados; o resto é TECLADO (USB) ou
+  /// SERIAL (porta serial não cadastrada).
+  Widget _etiqueta(String id, bool serial) {
+    final i = _scanner(id);
+    final Color cor;
+    final String texto;
+    if (i >= 0) {
+      cor = coresScanner[i];
+      texto = 'SCANNER ${i + 1}';
+    } else if (serial) {
+      cor = corSerial;
+      texto = 'SERIAL';
+    } else {
+      cor = corTeclado;
+      texto = 'TECLADO';
+    }
     return Container(
-      width: 72,
+      width: 80,
       padding: const EdgeInsets.symmetric(vertical: 2),
       decoration: BoxDecoration(
         color: cor,
@@ -367,7 +483,7 @@ class _TelaState extends State<Tela> {
       ),
       alignment: Alignment.center,
       child: Text(
-        teclado ? 'TECLADO' : 'SCANNER',
+        texto,
         style: const TextStyle(
           color: Colors.white,
           fontSize: 11,
